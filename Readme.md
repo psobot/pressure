@@ -1,16 +1,16 @@
-# `backpressure`
+# `pressure`
 *A reimplementation of Python's synchronized and bounded Queue.Queue on a Redis backend.*
 
 by Peter Sobot (psobot.com) on April 18, 2013. Licensed under MIT.
 
 ---
 
-`backpressure` implements everybody's favourite Python data structure, the
+`pressure` implements everybody's favourite Python data structure, the
 trusty built-in `Queue.Queue`, on top of everybody's favourite distributed
 data store, Redis. Nearly all of the original Queue's API is replicated.
 And amazingly, there are tests!
 
-`backpressure` allows for **synchronized**, **blocking** and **distributed**
+`pressure` allows for **synchronized**, **blocking** and **distributed**
 (a.k.a.: multi-process) queues to be shared between processes, between 
 machines, and even between data centers.
 
@@ -37,7 +37,7 @@ machines, and even between data centers.
     > sudo pip install redis
 
     # clone this repo
-    > git clone git@github.com:psobot/backpressure.git
+    > git clone git@github.com:psobot/pressure.git
 
     # for quick local testing, make sure you have redis-server running
     > redis-server &
@@ -54,8 +54,8 @@ machines, and even between data centers.
     help      -> Python's own help system.
     object?   -> Details about 'object', use 'object??' for extra details.
 
-    In [1]: import backpressure
-    In [2]: q1 = backpressure.Queue('test_queue')
+    In [1]: import pressure
+    In [2]: q1 = pressure.Queue('test_queue')
     In [3]: q1.put('hello springfield!')
 
 ## TODOs
