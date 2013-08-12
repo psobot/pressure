@@ -14,6 +14,9 @@ And amazingly, there are tests!
 (a.k.a.: multi-process) queues to be shared between processes, between 
 machines, and even between data centers.
 
+See `protocol.md` for a thorough (RFC-style) description of the protocol used.
+(At the moment, even the official client doesn't yet implement this protocol!)
+
 ## Examples
     
     q1 = rqueue.Queue('test')
@@ -63,9 +66,6 @@ machines, and even between data centers.
     - Ensure that this library has 100% API coverage with the original Queue.Queue
     - Clean up and document the internals
     - Add some stuff to the readme about the reliable and buffered variants rqueue
-    - Add more test cases
-    - Formalize the ``protocol'' that this library uses, to allow other languages
-      to also interface with this queue
     - Create a proof-of-concept version of this in C, maybe also Go?
 
 ## Questions/Comments/Feedback?
