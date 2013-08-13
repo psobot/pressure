@@ -18,38 +18,42 @@ typedef enum pressureStatus {
 
 typedef struct pressureQueue {
     redisContext *context;
-    const char *name;
-    const char *client_uid;
+    char *name;
+    char *client_uid;
 
     bool exists;
     bool connected;
+    bool closed;
     int bound;
 
     struct keys {
-        const char *queue;
-        const char *bound;
+        char *queue;
+        char *bound;
 
-        const char *producer;
-        const char *consumer;
+        char *producer;
+        char *consumer;
 
-        const char *producer_free;
-        const char *consumer_free;
+        char *producer_free;
+        char *consumer_free;
 
-        const char *stats_produced_messages;
-        const char *stats_produced_bytes;
-        const char *stats_consumed_messages;
-        const char *stats_consumed_bytes;
+        char *stats_produced_messages;
+        char *stats_produced_bytes;
+        char *stats_consumed_messages;
+        char *stats_consumed_bytes;
 
-        const char *not_full;
-        const char *closed;
+        char *not_full;
+        char *closed;
     } keys;
 } pressureQueue;
 
 pressureQueue *pressure_connect(redisContext *context, const char *prefix, const char *name);
 pressureStatus pressure_create(pressureQueue* queue, int bound);
 
-pressureStatus pressure_get(pressureQueue* queue, char *buf, int *bufsize);
+pressureStatus pressure_get(pressureQueue* queue, char **buf, int *bufsize);
 pressureStatus pressure_put(pressureQueue* queue, char *buf, int bufsize);
+
+pressureStatus pressure_close(pressureQueue* queue);
+pressureStatus pressure_delete(pressureQueue* queue);
 
 void pressure_disconnect(pressureQueue* queue);
 
