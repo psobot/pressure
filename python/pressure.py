@@ -20,40 +20,21 @@ class QueueClosedError(Exception):
 
 
 class PressureQueue(object):
-    """
-    Simple synchronized Queue class with Redis Backend.
-    Based on work by Peter Hoffmann at:
-        http://peter-hoffmann.com/2012/python-simple-queue-redis-queue.html
-    Synchronous, blocking behaviour and generator syntax added by @psobot
-    """
-
     def __init__(self, name, prefix='__pressure__', **redis_kwargs):
         self._db = redis.Redis(**redis_kwargs)
         self.name = name
         self.prefix = prefix
-        self.keys = {
-            "queue": ":".join([prefix, name]),
-            "bound": ":".join([prefix, name, 'bound']),
 
-            "producer": ":".join([prefix, name, "producer"]),
-            "consumer": ":".join([prefix, name, "consumer"]),
+        self.keys = {"queue": ":".join([prefix, name])}
+        for key in ['bound', 'producer', 'consumer',
+                    'producer_free', 'consumer_free',
+                    'stats:produced_messages',
+                    'stats:produced_bytes',
+                    'stats:consumed_messages',
+                    'stats:consumed_bytes',
+                    'not_full', 'closed']:
+            self.keys[key] = ":".join([prefix, name, key])
 
-            "producer_free": ":".join([prefix, name, "producer_free"]),
-            "consumer_free": ":".join([prefix, name, "consumer_free"]),
-
-            "stats:produced_messages":
-                ":".join([prefix, name, "stats:produced_messages"]),
-            "stats:produced_bytes":
-                ":".join([prefix, name, "stats:produced_bytes"]),
-
-            "stats:consumed_messages":
-                ":".join([prefix, name, "stats:consumed_messages"]),
-            "stats:consumed_bytes":
-                ":".join([prefix, name, "stats:consumed_bytes"]),
-
-            "not_full": ":".join([prefix, name, "not_full"]),
-            "closed": ":".join([prefix, name, "closed"]),
-        }
         self.bound = self._db.get(self.keys['bound'])
         if self.bound is not None:
             self.bound = int(self.bound)
@@ -62,7 +43,7 @@ class PressureQueue(object):
             self.exists = False
         self.closed = self._db.exists(self.keys['closed'])
 
-        self.client_uid = "pid".join([socket.gethostname(), str(os.getpid())])
+        self.client_uid = "_pid".join([socket.gethostname(), str(os.getpid())])
 
     def create(self, bound=None):
         int_bound = int(bound) if bound is not None else 0
