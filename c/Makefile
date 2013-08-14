@@ -2,6 +2,7 @@ LIB_SOURCES = $(wildcard pressure*.c)
 LIB_OBJECTS = $(LIB_SOURCES:.c=.o)
 LIB_DEPENDS = $(LIB_SOURCES:.c=.d)
 LIB_O = pressure.o
+LIB = libpressure.a
 
 PUT_SOURCES = $(wildcard put*.c)
 PUT_OBJECTS = $(PUT_SOURCES:.c=.o)
@@ -15,7 +16,6 @@ GET = get
 
 CFLAGS = -Wall -MMD -ftrapv -lhiredis
 CC = clang
-LIB = pressure
 
 .PHONY: debug clean clients
 
@@ -31,9 +31,9 @@ ${GET}: ${GET_OBJECTS} libpressure.a
 clients: ${PUT} ${GET}
 
 clean:
-	rm -f *.d *.o ${EXEC}
+	rm -rf *.d *.o ${PUT} ${GET} ${LIB} ${LIB_O} *.dSYM
 
-libpressure.a: ${LIB_O}
+${LIB}: ${LIB_O}
 	${AR} rcs $@ $^
 
 -include ${LIB_DEPENDS}
