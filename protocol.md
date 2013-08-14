@@ -11,7 +11,7 @@
 
 This document is considered the canonical specification of the `pressure` protocol. All `pressure` implementations must implement some version of this document.
 
-This document is currently at **version 0.1**. It's written in pseudo-RFC style, with the following words having specific meaning:
+This document is currently at **version 0.12**. It's written in pseudo-RFC style, with the following words having specific meaning:
 
  - "*may*" is used to indicate optional behaviour or suggestions that might help ease implementation. Clients that do not implement these clauses can still conform to the `pressure` protocol.
  - "*must*" is used to indicate behaviour that constitutes the core of the protocol. Any client that claims to conform to the protocol must implement this behaviour. Clients that do not implement required behaviour may cause undefined behaviour when used with other conforming clients.  
@@ -40,6 +40,8 @@ Clients of `pressure` queues must each have a **unique identifying value** that 
  - The thread identifier of the client's current thread
  
 Unique identifying values are useful when trying to inspect the current state of queues, including the identities of readers and writers to queues. Should a deadlock situation occur, unique identifying values that help track the location of the blocked code can help aid debugging.
+
+A good paradigm for clients is that the **producer** of the data should create the queue (and optionally, eventually close it) while the **consumer** of the data should destroy the queue after all of its data has been read.
 
 ### Queues
 A `pressure` queue is composed of **12** Redis keys, where `${REDIS_PREFIX}` is defined as above and `${queue_name}` is an arbitrary identifier. Any characters that are valid in a Redis key name are valid as the `${queue_name}`.

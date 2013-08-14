@@ -1,38 +1,49 @@
 # `pressure`
 *A reimplementation of Python's synchronized and bounded Queue.Queue on a Redis backend.*
 
-by Peter Sobot (psobot.com) on April 18, 2013. Licensed under MIT.
+by Peter Sobot ([@psobot](http://twitter.com/psobot), [psobot.com](http://psobot.com)). Licensed under MIT.
 
 ---
 
 `pressure` implements everybody's favourite Python data structure, the
 trusty built-in `Queue.Queue`, on top of everybody's favourite distributed
 data store, Redis. Nearly all of the original Queue's API is replicated.
-And amazingly, there are tests!
 
 `pressure` allows for **synchronized**, **blocking** and **distributed**
 (a.k.a.: multi-process) queues to be shared between processes, between 
 machines, and even between data centers.
 
-See `protocol.md` for a thorough (RFC-style) description of the protocol used.
-(At the moment, even the official client doesn't yet implement this protocol!)
+See [`protocol.md`](https://github.com/psobot/pressure/blob/master/protocol.md) 
+for a thorough (RFC-style) description of the protocol used.
 
 ## Examples
     
-    q1 = rqueue.Queue('test')
-    q2 = rqueue.Queue('test')
+    #   Create two unique handles to the 'test' queue.
+    q1 = pressure.PressureQueue('test')
+    q2 = pressure.PressureQueue('test')
+
+    #   Create the 'test' queue, giving a bound of 5.
+    q1.create(bound=5)
     
+    #   Put the strings into one handle.
     for string in ["hello", "goodbye"]:
         q1.put(string)
 
-    result = q2.get(block=False)
-    while result is not None:
+    #   Close the queue - assert that no more data will be produced.
+    q1.close()
+
+    #   Receive the strings from the other handle!
+    for result in q2:
         print result
-        result = q2.get(block=False)
 
     # Prints:
     #   "hello"
     #   "goodbye"
+
+    #   Delete the queue from the database once its data has been consumed.
+    #   This should be done on the consumer's end, as the consumer knows
+    #   once all of the data is gone.
+    q2.delete()
 
 ## Get Started
 
@@ -46,6 +57,7 @@ See `protocol.md` for a thorough (RFC-style) description of the protocol used.
     > redis-server &
 
     # muck around with ipython?
+    > cd python
     > ipython
 
     Python 2.7.1 (r271:86832, Jun 16 2011, 16:59:05) 
@@ -58,15 +70,15 @@ See `protocol.md` for a thorough (RFC-style) description of the protocol used.
     object?   -> Details about 'object', use 'object??' for extra details.
 
     In [1]: import pressure
-    In [2]: q1 = pressure.Queue('test_queue')
-    In [3]: q1.put('hello springfield!')
+    In [2]: q1 = pressure.PressureQueue('test_queue')
+    In [3]: q1.create(5)
+    In [4]: q1.put('hello springfield!')
 
 ## TODOs
 
-    - Ensure that this library has 100% API coverage with the original Queue.Queue
-    - Clean up and document the internals
-    - Add some stuff to the readme about the reliable and buffered variants rqueue
-    - Create a proof-of-concept version of this in C, maybe also Go?
+    - Ensure that this library has 100% API coverage with the original Queue.Queue.
+    - Clean up and document the internals.
+    - Make a Go client.
 
 ## Questions/Comments/Feedback?
 
