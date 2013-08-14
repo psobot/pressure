@@ -105,21 +105,19 @@ pressureQueue *pressure_connect(redisContext *context, const char *prefix, const
     freeReplyObject(reply);
 
     //  Check if the queue already exists.
-    reply = redisCommand(context, "EXISTS %s", r.keys.bound);
-    r.exists = reply->integer;
+    reply = redisCommand(context, "GET %s", r.keys.bound);
+    if (reply->type == REDIS_REPLY_STRING) {
+        r.bound = atoi(reply->str);
+        r.exists = true;
+    } else {
+        r.bound = BOUND_NOT_SET;
+        r.exists = false;
+    }
     freeReplyObject(reply);
 
-    if (r.exists) {
-        reply = redisCommand(context, "GET %s", r.keys.bound);
-        if (reply->type == REDIS_REPLY_STRING) {
-            r.bound = atoi(reply->str);
-        }
-        freeReplyObject(reply);
-
-        reply = redisCommand(context, "EXISTS %s", r.keys.closed);
-        r.closed = reply->integer;
-        freeReplyObject(reply);
-    }
+    reply = redisCommand(context, "EXISTS %s", r.keys.closed);
+    r.closed = reply->integer;
+    freeReplyObject(reply);
 
     pressureQueue *queue = malloc(sizeof(r));
     memcpy(queue, &r, sizeof(r));
@@ -218,7 +216,7 @@ pressureStatus pressure_put(pressureQueue* queue, char *buf, int bufsize) {
 
                 if (queue->bound > 0 && queue_length < queue->bound) {
                     freeReplyObject(redisCommand(queue->context, "LPUSH %s 0", queue->keys.not_full));
-                    freeReplyObject(redisCommand(queue->context, "LTRIM %s 0 1", queue->keys.not_full));
+                    freeReplyObject(redisCommand(queue->context, "LTRIM %s 0 0", queue->keys.not_full));
                 }
 
                 freeReplyObject(redisCommand(queue->context, "INCR %s", queue->keys.stats_produced_messages));
@@ -317,7 +315,7 @@ pressureStatus pressure_get(pressureQueue* queue, char **buf, int *bufsize) {
                     freeReplyObject(reply);
 
                     freeReplyObject(redisCommand(queue->context, "LPUSH %s 0", queue->keys.not_full));
-                    freeReplyObject(redisCommand(queue->context, "LTRIM %s 0 1", queue->keys.not_full));
+                    freeReplyObject(redisCommand(queue->context, "LTRIM %s 0 0", queue->keys.not_full));
 
                     freeReplyObject(redisCommand(queue->context, "INCR %s", queue->keys.stats_consumed_messages));
                     freeReplyObject(redisCommand(queue->context, "INCRBY %s %d", queue->keys.stats_consumed_bytes, data_length));
