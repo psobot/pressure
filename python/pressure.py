@@ -93,7 +93,6 @@ class PressureQueue(object):
                     raise QueueClosedError()
                 else:
                     result = self._db.brpop([self.keys['queue']], 0)
-                    print result
                     return result[1]
 
             else:
