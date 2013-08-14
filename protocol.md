@@ -196,7 +196,7 @@ The following sequences of Redis commands (and pseudocode) are provided as a ref
          bound = GET ${REDIS_PREFIX}:${queue_name}:bound
          if bound == 0 or len < bound
            LPUSH ${REDIS_PREFIX}:${queue_name}:not_full
-           LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 1
+           LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 0
          end
          
          INCR ${REDIS_PREFIX}:${queue_name}:produced_messages
@@ -227,7 +227,7 @@ The following sequences of Redis commands (and pseudocode) are provided as a ref
        end
                   
        LPUSH ${REDIS_PREFIX}:${queue_name}:not_full 0
-       LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 1
+       LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 0
          
        INCR ${REDIS_PREFIX}:${queue_name}:consumed_messages
        INCRBY ${REDIS_PREFIX}:${queue_name}:consumed_bytes bytes_value
