@@ -52,6 +52,10 @@ pressureStatus pressure_create(pressureQueue* queue, int bound);
 pressureStatus pressure_get(pressureQueue* queue, char **buf, int *bufsize);
 pressureStatus pressure_put(pressureQueue* queue, char *buf, int bufsize);
 
+bool pressure_exists(pressureQueue* queue);
+pressureStatus pressure_length(pressureQueue *queue, int *length);
+pressureStatus pressure_closed(pressureQueue *queue, bool *closed);
+
 pressureStatus pressure_close(pressureQueue* queue);
 pressureStatus pressure_delete(pressureQueue* queue);
 

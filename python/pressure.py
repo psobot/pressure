@@ -3,10 +3,6 @@ import redis
 import socket
 
 
-class TimeoutError(Exception):
-    pass
-
-
 class QueueAlreadyExistsError(Exception):
     pass
 
@@ -17,6 +13,22 @@ class QueueDoesNotExistError(Exception):
 
 class QueueClosedError(Exception):
     pass
+
+
+class QueueFullError(Exception):
+    pass
+
+
+class QueueInUseError(Exception):
+    pass
+
+
+def requiresQueueToExist(fn):
+    def wrapped(self=None, *args, **kwargs):
+        if not self.exists():
+            raise QueueDoesNotExistError()
+        return fn(self, *args, **kwargs)
+    return wrapped
 
 
 class PressureQueue(object):
@@ -38,37 +50,57 @@ class PressureQueue(object):
         self.bound = self._db.get(self.keys['bound'])
         if self.bound is not None:
             self.bound = int(self.bound)
-            self.exists = True
+            self._exists = True
         else:
-            self.exists = False
-        self.closed = self._db.exists(self.keys['closed'])
+            self._exists = False
+        self._closed = self._db.exists(self.keys['closed'])
 
         self.client_uid = "_pid".join([socket.gethostname(), str(os.getpid())])
 
     def create(self, bound=None):
         int_bound = int(bound) if bound is not None else 0
 
-        self.exists = not self._db.setnx(self.keys['bound'], int_bound)
-        if self.exists:
+        self._exists = not self._db.setnx(self.keys['bound'], int_bound)
+        if self._exists:
             raise QueueAlreadyExistsError()
 
-        self.exists = True
+        self._exists = True
         self.bound = bound
         assert self._db.lpush(self.keys['producer_free'], 0) == 1
         assert self._db.lpush(self.keys['consumer_free'], 0) == 1
         assert self._db.lpush(self.keys['not_full'], 0) == 1
 
-    def get(self):
-        if not self._db.exists(self.keys['bound']):
-            self.exists = False
-            raise QueueDoesNotExistError()
+    @requiresQueueToExist
+    def exists(self):
+        self._exists = self._db.exists(self.keys['bound'])
+        return self._exists
 
+    @requiresQueueToExist
+    def qsize(self):
+        return self._db.llen(self.keys['queue'])
+
+    @requiresQueueToExist
+    def closed(self):
+        if self._closed:
+            return True
+        else:
+            self._closed = self._db.exists(self.keys['closed'])
+            return self._closed
+
+    def get(self, block=True, timeout=0):
+        if block:
+            return self.__get_blocking(timeout=timeout)
+        else:
+            return self.get_nowait()
+
+    @requiresQueueToExist
+    def __get_blocking(self, timeout=0):
         self._db.brpop([self.keys['consumer_free']], 0)
         try:
             self._db.set(self.keys['consumer'], self.client_uid)
 
-            self.closed = self._db.exists(self.keys['closed'])
-            if self.closed:
+            self._closed = self._db.exists(self.keys['closed'])
+            if self._closed:
                 empty = not self._db.exists(self.keys['queue'])
                 if empty:
                     raise QueueClosedError()
@@ -80,7 +112,7 @@ class PressureQueue(object):
                 result = self._db.brpop([self.keys['queue'],
                                          self.keys['closed']], 0)
                 if result[0] == self.keys['closed']:
-                    self.closed = True
+                    self._closed = True
                     raise QueueClosedError()
                 else:
                     self._db.lpush(self.keys['not_full'], 0)
@@ -95,17 +127,39 @@ class PressureQueue(object):
         finally:
             self._db.lpush(self.keys['consumer_free'], 0)
 
-    def put(self, bytes):
-        if not self._db.exists(self.keys['bound']):
-            self.exists = False
-            raise QueueDoesNotExistError()
+    @requiresQueueToExist
+    def get_nowait(self):
+        res = self._db.rpop([self.keys['consumer_free']], 0)
+        if res is None:
+            raise QueueInUseError()
+        try:
+            self._db.set(self.keys['consumer'], self.client_uid)
+            result = self._db.rpop(self.keys['queue'])
 
+            self._db.lpush(self.keys['not_full'], 0)
+            self._db.ltrim(self.keys['not_full'], 0, 0)
+
+            if result is not None:
+                self._db.incr(self.keys['stats:consumed_messages'])
+                self._db.incr(
+                    self.keys['stats:consumed_bytes'],
+                    len(result)
+                )
+            elif self._db.exists(self.keys['closed']):
+                self._closed = True
+                raise QueueClosedError()
+            return result
+        finally:
+            self._db.lpush(self.keys['consumer_free'], 0)
+
+    @requiresQueueToExist
+    def put(self, bytes):
         self._db.brpop([self.keys['producer_free']], 0)
         try:
             self._db.set(self.keys['producer'], self.client_uid)
 
-            self.closed = self._db.exists(self.keys['closed'])
-            if self.closed:
+            self._closed = self._db.exists(self.keys['closed'])
+            if self._closed:
                 raise QueueClosedError()
 
             if self.bound is not None:
@@ -121,28 +175,49 @@ class PressureQueue(object):
         finally:
             self._db.lpush(self.keys['producer_free'], 0)
 
-    def close(self):
-        if not self._db.exists(self.keys['bound']):
-            self.exists = False
-            raise QueueDoesNotExistError()
+    @requiresQueueToExist
+    def put_nowait(self, bytes):
+        res = self._db.rpop([self.keys['producer_free']], 0)
+        if res is None:
+            raise QueueInUseError()
+        try:
+            self._db.set(self.keys['producer'], self.client_uid)
 
+            self._closed = self._db.exists(self.keys['closed'])
+            if self._closed:
+                raise QueueClosedError()
+
+            if self.bound is not None:
+                res = self._db.rpop(self.keys['not_full'])
+                if res is None:
+                    raise QueueFullError()
+
+            new_length = self._db.lpush(self.keys['queue'], bytes)
+            if self.bound is not None and new_length < self.bound:
+                self._db.lpush(self.keys['not_full'], 0)
+                self._db.ltrim(self.keys['not_full'], 0, 0)
+
+            self._db.incr(self.keys['stats:produced_messages'])
+            self._db.incr(self.keys['stats:produced_bytes'], len(bytes))
+        finally:
+            self._db.lpush(self.keys['producer_free'], 0)
+
+    @requiresQueueToExist
+    def close(self):
         self._db.brpop([self.keys['producer_free']], 0)
         try:
             self._db.set(self.keys['producer'], self.client_uid)
 
-            self.closed = self._db.exists(self.keys['closed'])
-            if self.closed:
+            self._closed = self._db.exists(self.keys['closed'])
+            if self._closed:
                 raise QueueClosedError()
 
             self._db.lpush(self.keys['closed'], 0, 0)
         finally:
             self._db.lpush(self.keys['producer_free'], 0)
 
+    @requiresQueueToExist
     def delete(self):
-        if not self._db.exists(self.keys['bound']):
-            self.exists = False
-            raise QueueDoesNotExistError()
-
         self._db.delete(self.keys['bound'])
         self._db.lpush(self.keys['not_full'], 0)
         self._db.lpush(self.keys['closed'], 0, 0)
@@ -163,7 +238,7 @@ class PressureQueue(object):
             self.keys['queue'],
         )
 
-        self.exists = False
+        self._exists = False
 
     def __iter__(self):
         return self

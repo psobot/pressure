@@ -408,6 +408,55 @@ pressureStatus pressure_delete(pressureQueue *queue) {
     return kPressureStatus_Success;
 }
 
+bool pressure_exists(pressureQueue* queue) {
+    redisReply *reply = redisCommand(queue->context, "EXISTS %s", queue->keys.bound);
+    queue->exists = reply->integer;
+    freeReplyObject(reply);
+
+    return queue->exists;
+}
+
+pressureStatus pressure_length(pressureQueue *queue, int *length) {
+    redisReply *reply = redisCommand(queue->context, "LLEN %s", queue->keys.queue);
+
+    if (reply->type == REDIS_REPLY_NIL) {
+        freeReplyObject(reply);
+        
+        reply = redisCommand(queue->context, "EXISTS %s", queue->keys.bound);
+        queue->exists = reply->integer;
+
+        freeReplyObject(reply);
+        if (queue->exists) {
+            *length = 0;
+            return kPressureStatus_Success;
+        } else {
+            return kPressureStatus_QueueDoesNotExistError;
+        }
+    } else if (reply->type == REDIS_REPLY_INTEGER) {
+        *length = reply->integer;
+
+        freeReplyObject(reply);
+        return kPressureStatus_Success;
+    }
+
+    freeReplyObject(reply);
+    return kPressureStatus_UnexpectedFailure;
+}
+
+pressureStatus pressure_closed(pressureQueue *queue, bool *closed) {
+    if (pressure_exists(queue)) {
+        redisReply *reply = redisCommand(queue->context, "EXISTS %s", queue->keys.closed);
+        queue->closed = reply->integer;
+        freeReplyObject(reply);
+        
+        *closed = queue->closed;
+
+        return kPressureStatus_Success;
+    } else {
+        return kPressureStatus_QueueDoesNotExistError;
+    }
+}
+
 void pressure_disconnect(pressureQueue *queue) {
     if (queue->connected) {
         queue->connected = false;

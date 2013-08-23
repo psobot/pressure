@@ -11,7 +11,7 @@
 
 This document is considered the canonical specification of the `pressure` protocol. All `pressure` implementations must implement some version of this document.
 
-This document is currently at **version 0.12**. It's written in pseudo-RFC style, with the following words having specific meaning:
+This document is currently at **version 0.13**. It's written in pseudo-RFC style, with the following words having specific meaning:
 
  - "*may*" is used to indicate optional behaviour or suggestions that might help ease implementation. Clients that do not implement these clauses can still conform to the `pressure` protocol.
  - "*must*" is used to indicate behaviour that constitutes the core of the protocol. Any client that claims to conform to the protocol must implement this behaviour. Clients that do not implement required behaviour may cause undefined behaviour when used with other conforming clients.  
@@ -79,6 +79,30 @@ Clients that create queues **must** take the following steps to initialize a que
 
 Queues **must** be initialized prior to their use. If a queue has been created, then its corresponding `:bound` key will be initialized. (This is the only way to tell if a queue has been created.)
 
+####Exists
+
+Clients that check existence of a queue take on neither the producer or consumer roles.
+
+ - The client must check the `:bound` key. If the `:bound` key is empty, return negative. Otherwise, return positive.
+ 
+####Length
+
+Clients that check the length of the queue take on neither the producer or consumer role.
+
+ - The client must check the `:bound` key. If the `:bound` key is empty, an error must be raised - the queue does not exist.
+ - The client must return the length of the `${queue_name}` list.
+ 
+Note that this value is subject to change - items could be put into or removed from the queue immediately after checking this value. Checking the length of the queue does **not** guarantee that that number of elements will be available at time of access.
+
+####Closed
+
+Clients that check the length of the queue take on neither the producer or consumer role.
+
+ - The client must check the `:bound` key. If the `:bound` key is empty, an error must be raised - the queue does not exist.
+ - The client must check the existence `:closed` key. If the key exists, return positive. Otherwise, return negative.
+
+If this operation returns positively, then the queue is closed permanently and cannot be reopened. If this operation returns negatively, the queue may be closed at any time afterwards. Finding the queue to be open does **not** guarantee that the queue will be open at the time of access.
+
 ####Put
 
 Clients that initiate a Put operation assume the role of the producer of the queue. Clients **must** implement the following behaviour to put a value onto a queue:
@@ -105,6 +129,27 @@ Clients that initiate a Put operation assume the role of the producer of the que
  - The client must compare the `:bound` key with the length of the queue. If the queue length is strictly less than the bound or the bound is zero, the client must push a value to the `:not_full` key. If the `:not_full` key contains more than one element after this operation, it must be reduced to one element.
  - The client must push a value to the `:producer_free` key.
 
+####Put (Non-Blocking)
+
+Clients that initiate a non-blocking Put operation assume the role of the producer of the queue. Clients **must** implement the following behaviour to put a value onto a queue:
+
+ - The client must check the `:bound` key. If the `:bound` key is empty, an error must be raised, as the queue does not exist.
+
+ - The client must check the `:closed` key. If the key is not empty, an error must be raised, as closed queues cannot be pushed onto.
+
+ - The client must check the `:producer_free` key of its queue. If the list at that key is empty, then another producer is currently acting on the queue and the current client **must** not put its element onto the queue. The client must return an error indicating that another producer is using the queue.
+ 
+    Once the `:producer_free` key is available, the client **must** pop the element from the list to indicate that it is taking over the producer role.
+    
+ - The client must set the `:producer` key to its unique identifying value, replacing any value that already exists.
+   
+ - The client must attempt to pop from the `:not_full` key. The client must return an error  and an element must be pushed onto the `:producer_free` list by the client if the `:not_full` key is empty.
+   
+ - The client must push its data element onto the `${queue_name}` list.
+ - The client must increment the `:stats:produced_messages` key.
+ - The client **may** increment the `:stats:produced_bytes` key with the number of bytes in the latest data element. If computing the length of the latest element is prohibitively costly, this step may be omitted.
+ - The client must compare the `:bound` key with the length of the queue. If the queue length is strictly less than the bound or the bound is zero, the client must push a value to the `:not_full` key. If the `:not_full` key contains more than one element after this operation, it must be reduced to one element.
+ - The client must push a value to the `:producer_free` key.
 
 ####Get
 
@@ -125,6 +170,25 @@ Clients that initiate a Get operation assume the role of the consumer of the que
    - The client may return an error after some fixed timeout. If an error is returned, an element must be pushed onto the `:consumer_free` list by the client.
  - The client must ensure that the `:not_full` list has a value.
    - The client **may** choose to implement the above two steps in one call with Redis' `BRPOPLPUSH` command, as the value stored in the `:not_full` list is undefined.
+   
+ - The client must increment the `:stats:consumed_messages` key with the number of messages returned.
+ - The client **may** increment the `:stats:consumed_bytes` key with the number of bytes in the latest data element. If computing the length of the latest element is prohibitively costly, this step may be omitted.
+ - The client must push a value to the `:consumer_free` key.
+
+####Get (Non-Blocking)
+
+Clients that initiate a Get operation assume the role of the consumer of the queue. Clients **must** implement the following behaviour to get a value from a queue:
+
+ - The client must check the `:bound` key. If the `:bound` key is empty, an error must be raised, as the queue does not exist.
+
+ - The client must check the `:consumer_free` key of its queue. If the list at that key is empty, then another consumer is currently acting on the queue and the current client **must** not pop an element from the queue. The client may return an error indicating that another consumer is using the queue.
+   
+    Once the `:consumer_free` key is available, the client **must** pop the element from the list to indicate that it is taking over the producer role.
+    
+ - The client must set the `:consumer` key to its unique identifying value, replacing any value that already exists.
+   
+ - The client must attempt to pop from the `${queue_name}` list. If the list is empty and the `:closed` key is also empty, the client **must** return an error. If an error is returned, an element must be pushed onto the `:consumer_free` list by the client.
+ - The client must ensure that the `:not_full` list has a value.
    
  - The client must increment the `:stats:consumed_messages` key with the number of messages returned.
  - The client **may** increment the `:stats:consumed_bytes` key with the number of bytes in the latest data element. If computing the length of the latest element is prohibitively costly, this step may be omitted.
@@ -183,6 +247,22 @@ The following sequences of Redis commands (and pseudocode) are provided as a ref
     LPUSH ${REDIS_PREFIX}:${queue_name}:consumer_free 1
     LPUSH ${REDIS_PREFIX}:${queue_name}:not_full 1
 
+####Exists
+
+    EXISTS ${REDIS_PREFIX}:${queue_name}:bound
+ 
+####Length
+
+    if EXISTS ${REDIS_PREFIX}:${queue_name}:bound
+      LLEN ${REDIS_PREFIX}:${queue_name}
+    end
+    
+####Closed
+
+    if EXISTS ${REDIS_PREFIX}:${queue_name}:bound
+      EXISTS ${REDIS_PREFIX}:${queue_name}:closed
+    end
+
 ####Put
 
     if EXISTS ${REDIS_PREFIX}:${queue_name}:bound
@@ -193,6 +273,36 @@ The following sequences of Redis commands (and pseudocode) are provided as a ref
          raise QueueClosedError
        else
          BRPOP ${REDIS_PREFIX}:${queue_name}:not_full
+         
+         len = LPUSH ${REDIS_PREFIX}:${queue_name} data_value
+         bound = GET ${REDIS_PREFIX}:${queue_name}:bound
+         if bound == 0 or len < bound
+           LPUSH ${REDIS_PREFIX}:${queue_name}:not_full
+           LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 0
+         end
+         
+         INCR ${REDIS_PREFIX}:${queue_name}:produced_messages
+         INCRBY ${REDIS_PREFIX}:${queue_name}:produced_bytes bytes_value
+       end
+       LPUSH ${REDIS_PREFIX}:${queue_name}:producer_free 0
+    else
+      raise QueueDoesNotExistError
+    end
+
+####Put (Non-Blocking)
+
+    if EXISTS ${REDIS_PREFIX}:${queue_name}:bound
+       if RPOP ${REDIS_PREFIX}:${queue_name}:producer_free == nil
+         raise QueueInUseError
+       end
+       SET ${REDIS_PREFIX}:${queue_name}:producer producer_value
+       
+       if EXISTS ${REDIS_PREFIX}:${queue_name}:closed
+         raise QueueClosedError
+       else
+         if RPOP ${REDIS_PREFIX}:${queue_name}:not_full == nil
+           raise QueueFullError
+         end
          
          len = LPUSH ${REDIS_PREFIX}:${queue_name} data_value
          bound = GET ${REDIS_PREFIX}:${queue_name}:bound
@@ -235,6 +345,40 @@ The following sequences of Redis commands (and pseudocode) are provided as a ref
        INCRBY ${REDIS_PREFIX}:${queue_name}:consumed_bytes bytes_value
          
        LPUSH ${REDIS_PREFIX}:${queue_name}:consumer_free 0
+       
+       return res[1]
+    else
+      raise QueueDoesNotExistError
+    end
+    
+####Get (Non-Blocking)
+
+    if EXISTS ${REDIS_PREFIX}:${queue_name}:bound
+       if RPOP ${REDIS_PREFIX}:${queue_name}:consumer_free 0  == nil
+         raise QueueInUseError
+       end
+       SET ${REDIS_PREFIX}:${queue_name}:consumer consumer_value
+         
+       if EXISTS ${REDIS_PREFIX}:${queue_name}:closed
+           if LLEN ${REDIS_PREFIX}:${queue_name} == 0
+             raise QueueClosedError
+           else
+             res = RPOP ${REDIS_PREFIX}:${queue_name} 0
+           end
+       else 
+         res = RPOP ${REDIS_PREFIX}:${queue_name} ${REDIS_PREFIX}:${queue_name}:closed 0
+       end
+       
+       LPUSH ${REDIS_PREFIX}:${queue_name}:not_full 0
+       LTRIM ${REDIS_PREFIX}:${queue_name}:not_full 0 0
+       
+       if res != nil:            
+           INCR ${REDIS_PREFIX}:${queue_name}:consumed_messages
+           INCRBY ${REDIS_PREFIX}:${queue_name}:consumed_bytes bytes_value
+         
+       LPUSH ${REDIS_PREFIX}:${queue_name}:consumer_free 0
+       
+       return res
     else
       raise QueueDoesNotExistError
     end
