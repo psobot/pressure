@@ -1,6 +1,9 @@
 import os
+import time
 import redis
 import socket
+
+UNBLOCK_TIMEOUT = 1.0  # seconds
 
 
 class QueueAlreadyExistsError(Exception):
@@ -23,16 +26,21 @@ class QueueInUseError(Exception):
     pass
 
 
+class OperationUnblocked(Exception):
+    pass
+
+
 def requiresQueueToExist(fn):
     def wrapped(self=None, *args, **kwargs):
-        if not self.exists():
+        if not self.exists:
             raise QueueDoesNotExistError()
         return fn(self, *args, **kwargs)
     return wrapped
 
 
 class PressureQueue(object):
-    def __init__(self, name, prefix='__pressure__', **redis_kwargs):
+    def __init__(self, name, prefix='__pressure__',
+                 allow_unblocking=False, **redis_kwargs):
         self._db = redis.Redis(**redis_kwargs)
         self.name = name
         self.prefix = prefix
@@ -57,6 +65,9 @@ class PressureQueue(object):
 
         self.client_uid = "_pid".join([socket.gethostname(), str(os.getpid())])
 
+        self.allow_unblocking = allow_unblocking
+        self._unblock = False
+
     def create(self, bound=None):
         int_bound = int(bound) if bound is not None else 0
 
@@ -70,7 +81,7 @@ class PressureQueue(object):
         assert self._db.lpush(self.keys['consumer_free'], 0) == 1
         assert self._db.lpush(self.keys['not_full'], 0) == 1
 
-    @requiresQueueToExist
+    @property
     def exists(self):
         self._exists = self._db.exists(self.keys['bound'])
         return self._exists
@@ -87,15 +98,50 @@ class PressureQueue(object):
             self._closed = self._db.exists(self.keys['closed'])
             return self._closed
 
-    def get(self, block=True, timeout=0):
+    def unblock(self):
+        """Unblocks any get or put operations that are blocking on
+        data operations. Any data being put on the queue will be
+        discarded - any data being received from the queue will remain
+        on the queue."""
+        self._unblock = True
+
+    def unblockable_brpop(self, keys, timeout, allow_unblocking=None):
+        if allow_unblocking is None:
+            allow_unblocking = self.allow_unblocking
+
+        if allow_unblocking:
+            start = time.time()
+            while not self._unblock:
+                result = self._db.brpop(keys, int(UNBLOCK_TIMEOUT))
+                if result is not None:
+                    return result
+                elif timeout != 0 and time.time() - start > timeout:
+                    return None
+            else:
+                raise OperationUnblocked()
+        else:
+            return self._db.brpop(keys, int(timeout))
+
+    def get(self, block=True, timeout=0, allow_unblocking=None):
         if block:
-            return self.__get_blocking(timeout=timeout)
+            return self.__get_blocking(
+                timeout=timeout,
+                allow_unblocking=allow_unblocking
+            )
         else:
             return self.get_nowait()
 
     @requiresQueueToExist
-    def __get_blocking(self, timeout=0):
-        self._db.brpop([self.keys['consumer_free']], 0)
+    def __get_blocking(self, timeout=0, allow_unblocking=None):
+        if allow_unblocking is None:
+            allow_unblocking = self.allow_unblocking
+
+        #   TODO: Implement timeout here.
+        self.unblockable_brpop(
+            [self.keys['consumer_free']],
+            0,
+            allow_unblocking
+        )
         try:
             self._db.set(self.keys['consumer'], self.client_uid)
 
@@ -105,12 +151,18 @@ class PressureQueue(object):
                 if empty:
                     raise QueueClosedError()
                 else:
-                    result = self._db.brpop([self.keys['queue']], 0)
+                    result = self.unblockable_brpop(
+                        [self.keys['queue']],
+                        0,
+                        allow_unblocking
+                    )
                     return result[1]
 
             else:
-                result = self._db.brpop([self.keys['queue'],
-                                         self.keys['closed']], 0)
+                result = self.unblockable_brpop(
+                    [self.keys['queue'], self.keys['closed']],
+                    0, allow_unblocking
+                )
                 if result[0] == self.keys['closed']:
                     self._closed = True
                     raise QueueClosedError()
@@ -129,7 +181,7 @@ class PressureQueue(object):
 
     @requiresQueueToExist
     def get_nowait(self):
-        res = self._db.rpop([self.keys['consumer_free']], 0)
+        res = self._db.rpop(self.keys['consumer_free'])
         if res is None:
             raise QueueInUseError()
         try:
@@ -153,8 +205,43 @@ class PressureQueue(object):
             self._db.lpush(self.keys['consumer_free'], 0)
 
     @requiresQueueToExist
-    def put(self, bytes):
-        self._db.brpop([self.keys['producer_free']], 0)
+    def peek_reverse_nowait(self):
+        res = self._db.rpop(self.keys['consumer_free'])
+        if res is None:
+            raise QueueInUseError()
+        try:
+            self._db.set(self.keys['consumer'], self.client_uid)
+            result = self._db.lrange(self.keys['queue'], 0, 0)
+            if not result and self._db.exists(self.keys['closed']):
+                self._closed = True
+                raise QueueClosedError()
+            return result[0] if result else None
+        finally:
+            self._db.lpush(self.keys['consumer_free'], 0)
+
+    @requiresQueueToExist
+    def put(self, bytes, block=True, timeout=None,
+            allow_unblocking=None, allow_overfilling=False):
+        if block:
+            return self.__put_blocking(
+                bytes,
+                timeout=timeout,
+                allow_unblocking=allow_unblocking
+            )
+        else:
+            return self.put_nowait(bytes, allow_overfilling=allow_overfilling)
+
+    @requiresQueueToExist
+    def __put_blocking(self, bytes, timeout=None,
+                       allow_unblocking=None, allow_overfilling=False):
+        if allow_unblocking is None:
+            allow_unblocking = self.allow_unblocking
+
+        self.unblockable_brpop(
+            [self.keys['producer_free']],
+            0,
+            allow_unblocking
+        )
         try:
             self._db.set(self.keys['producer'], self.client_uid)
 
@@ -162,8 +249,12 @@ class PressureQueue(object):
             if self._closed:
                 raise QueueClosedError()
 
-            if self.bound is not None:
-                self._db.brpop([self.keys['not_full']], 0)
+            if self.bound is not None and not allow_overfilling:
+                self.unblockable_brpop(
+                    [self.keys['not_full']],
+                    0,
+                    allow_unblocking
+                )
 
             new_length = self._db.lpush(self.keys['queue'], bytes)
             if self.bound is not None and new_length < self.bound:
@@ -176,8 +267,8 @@ class PressureQueue(object):
             self._db.lpush(self.keys['producer_free'], 0)
 
     @requiresQueueToExist
-    def put_nowait(self, bytes):
-        res = self._db.rpop([self.keys['producer_free']], 0)
+    def put_nowait(self, bytes, allow_overfilling=False):
+        res = self._db.rpop(self.keys['producer_free'])
         if res is None:
             raise QueueInUseError()
         try:
@@ -187,7 +278,7 @@ class PressureQueue(object):
             if self._closed:
                 raise QueueClosedError()
 
-            if self.bound is not None:
+            if self.bound is not None and not allow_overfilling:
                 res = self._db.rpop(self.keys['not_full'])
                 if res is None:
                     raise QueueFullError()
