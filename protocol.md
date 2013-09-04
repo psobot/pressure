@@ -11,7 +11,7 @@
 
 This document is considered the canonical specification of the `pressure` protocol. All `pressure` implementations must implement some version of this document.
 
-This document is currently at **version 0.13**. It's written in pseudo-RFC style, with the following words having specific meaning:
+This document is currently at **version 0.14**. It's written in pseudo-RFC style, with the following words having specific meaning:
 
  - "*may*" is used to indicate optional behaviour or suggestions that might help ease implementation. Clients that do not implement these clauses can still conform to the `pressure` protocol.
  - "*must*" is used to indicate behaviour that constitutes the core of the protocol. Any client that claims to conform to the protocol must implement this behaviour. Clients that do not implement required behaviour may cause undefined behaviour when used with other conforming clients.  
@@ -119,9 +119,11 @@ Clients that initiate a Put operation assume the role of the producer of the que
     
  - The client must set the `:producer` key to its unique identifying value, replacing any value that already exists.
    
- - The client must attempt to pop from the `:not_full` key. If the key is empty, the client **must** do one of two things:
+ - The client may attempt to pop from the `:not_full` key. If the key is empty, the client **must** do one of two things:
    - The client may block until the key exists.
    - The client may return an error after some fixed timeout. If an error is returned, an element must be pushed onto the `:producer_free` list by the client.
+   
+   If the client does not attempt to pop from the `:not_full` key, the client may choose to push its value onto a full queue. This behaviour should be reserved for extraordinary situations - such as a failing client that is pushing all of its data to the queue before terminating.
    
  - The client must push its data element onto the `${queue_name}` list.
  - The client must increment the `:stats:produced_messages` key.
