@@ -58,6 +58,8 @@ class PressureQueue(object):
         self.bound = self._db.get(self.keys['bound'])
         if self.bound is not None:
             self.bound = int(self.bound)
+            if self.bound is 0:
+                self.bound = None
             self._exists = True
         else:
             self._exists = False
