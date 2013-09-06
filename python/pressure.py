@@ -338,6 +338,6 @@ class PressureQueue(object):
 
     def next(self):
         try:
-            return self.get()
+            return self.get(allow_unblocking=True)
         except QueueClosedError:
             raise StopIteration()
