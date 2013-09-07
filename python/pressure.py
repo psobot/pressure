@@ -23,7 +23,15 @@ class QueueFullError(Exception):
 
 
 class QueueInUseError(Exception):
-    pass
+    def __init__(self, name, user, role):
+        self.name = name
+        self.user = user
+        self.role = role
+
+    def __str__(self):
+        return "%s '%s' has a lock on queue '%s'." % (
+            self.role.capitalize(), self.user, self.name
+        )
 
 
 class OperationUnblocked(Exception):
@@ -185,7 +193,11 @@ class PressureQueue(object):
     def get_nowait(self):
         res = self._db.rpop(self.keys['consumer_free'])
         if res is None:
-            raise QueueInUseError()
+            raise QueueInUseError(
+                self.name,
+                self._db.get(self.keys['consumer']),
+                'consumer'
+            )
         try:
             self._db.set(self.keys['consumer'], self.client_uid)
             result = self._db.rpop(self.keys['queue'])
@@ -210,7 +222,11 @@ class PressureQueue(object):
     def peek_reverse_nowait(self):
         res = self._db.rpop(self.keys['consumer_free'])
         if res is None:
-            raise QueueInUseError()
+            raise QueueInUseError(
+                self.name,
+                self._db.get(self.keys['consumer']),
+                'consumer'
+            )
         try:
             self._db.set(self.keys['consumer'], self.client_uid)
             result = self._db.lrange(self.keys['queue'], 0, 0)
@@ -272,7 +288,11 @@ class PressureQueue(object):
     def put_nowait(self, bytes, allow_overfilling=False):
         res = self._db.rpop(self.keys['producer_free'])
         if res is None:
-            raise QueueInUseError()
+            raise QueueInUseError(
+                self.name,
+                self._db.get(self.keys['producer']),
+                'producer'
+            )
         try:
             self._db.set(self.keys['producer'], self.client_uid)
 
