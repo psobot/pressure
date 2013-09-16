@@ -13,11 +13,18 @@ data store, Redis. Nearly all of the original Queue's API is replicated.
 (a.k.a.: multi-process) queues to be shared between processes, between 
 machines, and even between data centers.
 
-See [`protocol.md`](https://github.com/psobot/pressure/blob/master/protocol.md) 
-for a thorough (RFC-style) description of the protocol used.
+`pressure` is also **multilingual** - the protocol is well-defined (see [`protocol.md`](https://github.com/psobot/pressure/blob/master/protocol.md)) and there are libraries already for different languages, all included
+as submodules of this repo:
+
+  - [`pressure-python`](http://github.com/psobot/pressure-python/)
+  - [`pressure-c`](http://github.com/psobot/pressure-c/) (not submoduled just yet)
+<!--  - [`pressure-go`](http://github.com/psobot/pressure-go/) -->
+
 
 ## Examples
-    
+
+    import pressure
+
     #   Create two unique handles to the 'test' queue.
     q1 = pressure.PressureQueue('test')
     q2 = pressure.PressureQueue('test')
@@ -47,11 +54,7 @@ for a thorough (RFC-style) description of the protocol used.
 
 ## Get Started
 
-    # make sure you have redis python bindings installed
-    > sudo pip install redis
-
-    # clone this repo
-    > git clone git@github.com:psobot/pressure.git
+    > sudo pip install pressure
 
     # for quick local testing, make sure you have redis-server running
     > redis-server &
@@ -78,7 +81,6 @@ for a thorough (RFC-style) description of the protocol used.
 
     - Ensure that this library has 100% API coverage with the original Queue.Queue.
     - Clean up and document the internals.
-    - Make a Go client.
 
 ## Questions/Comments/Feedback?
 
