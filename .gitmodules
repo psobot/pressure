@@ -1,0 +1,3 @@
+[submodule "python"]
+	path = python
+	url = git://github.com/psobot/pressure-python
