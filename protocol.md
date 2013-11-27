@@ -170,8 +170,9 @@ Clients that initiate a Get operation assume the role of the consumer of the que
  - The client must attempt to pop from the `${queue_name}` list. If the list is empty and the `:closed` key is also empty, the client **must** do one of two things:
    - The client may block until the key exists or the `:closed` key has elements.
    - The client may return an error after some fixed timeout. If an error is returned, an element must be pushed onto the `:consumer_free` list by the client.
- - The client must ensure that the `:not_full` list has a value.
-   - The client **may** choose to implement the above two steps in one call with Redis' `BRPOPLPUSH` command, as the value stored in the `:not_full` list is undefined.
+ - If the `${queue_name}` list has less elements than the `:bound` key, or the `:bound` key is 0, the client must ensure that the `:not_full` list has a value.
+   - The client **may** choose to implement the above two steps in one call with Redis' `BRPOPLPUSH` command, as the value stored in the `:not_full` list is undefined. By using `BRPOPLPUSH`, the consumer will ensure that any producers waiting for space in the queue are immediately pushed to as soon as there is room in the queue.
+   - Note: the comparison of the current number of elements with the `:bound` key is not strictly necessary if the protocol is properly observed. A number of *pressure* clients allow for over-filling of the queue if a producer fails - this step ensures that over-filled queues are not appended to.
    
  - The client must increment the `:stats:consumed_messages` key with the number of messages returned.
  - The client **may** increment the `:stats:consumed_bytes` key with the number of bytes in the latest data element. If computing the length of the latest element is prohibitively costly, this step may be omitted.
@@ -190,7 +191,8 @@ Clients that initiate a Get operation assume the role of the consumer of the que
  - The client must set the `:consumer` key to its unique identifying value, replacing any value that already exists.
    
  - The client must attempt to pop from the `${queue_name}` list. If the list is empty and the `:closed` key is also empty, the client **must** return an error. If an error is returned, an element must be pushed onto the `:consumer_free` list by the client.
- - The client must ensure that the `:not_full` list has a value.
+ - If the `${queue_name}` list has less elements than the `:bound` key, or the `:bound` key is 0, the client must ensure that the `:not_full` list has a value.
+   - Note: the comparison of the current number of elements with the `:bound` key is not strictly necessary if the protocol is properly observed. A number of *pressure* clients allow for over-filling of the queue if a producer fails - this step ensures that over-filled queues are not appended to.
    
  - The client must increment the `:stats:consumed_messages` key with the number of messages returned.
  - The client **may** increment the `:stats:consumed_bytes` key with the number of bytes in the latest data element. If computing the length of the latest element is prohibitively costly, this step may be omitted.
