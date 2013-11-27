@@ -11,7 +11,7 @@
 
 This document is considered the canonical specification of the `pressure` protocol. All `pressure` implementations must implement some version of this document.
 
-This document is currently at **version 0.14**. It's written in pseudo-RFC style, with the following words having specific meaning:
+This document is currently at **version 0.15**. It's written in pseudo-RFC style, with the following words having specific meaning:
 
  - "*may*" is used to indicate optional behaviour or suggestions that might help ease implementation. Clients that do not implement these clauses can still conform to the `pressure` protocol.
  - "*must*" is used to indicate behaviour that constitutes the core of the protocol. Any client that claims to conform to the protocol must implement this behaviour. Clients that do not implement required behaviour may cause undefined behaviour when used with other conforming clients.  
