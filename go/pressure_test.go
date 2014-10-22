@@ -5,14 +5,38 @@ import (
 	"github.com/garyburd/redigo/redis"
 	"github.com/stretchr/testify/require"
 	"testing"
+	"time"
 )
 
-func TestAll(t *testing.T) {
-	c, err := redis.Dial("tcp", ":6379")
-	require.Nil(t, err)
-	defer c.Close()
+func newPool(server, password string) *redis.Pool {
+	return &redis.Pool{
+		MaxIdle:     3,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			c, err := redis.Dial("tcp", server)
+			if err != nil {
+				return nil, err
+			}
+			if password != "" {
+				if _, err := c.Do("AUTH", password); err != nil {
+					c.Close()
+					return nil, err
+				}
+			}
+			return c, err
+		},
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			_, err := c.Do("PING")
+			return err
+		},
+	}
+}
 
-	queue, err := pressure.NewPressureQueue(c, "__pressure__", "__test__")
+func TestFunctions(t *testing.T) {
+	pool := newPool(":6379", "")
+	defer pool.Close()
+
+	queue, err := pressure.NewPressureQueue(pool, "__pressure__", "__test__")
 	require.Nil(t, err)
 
 	queue.Delete()
@@ -53,4 +77,49 @@ func TestAll(t *testing.T) {
 	exists, err = queue.Exists()
 	require.Nil(t, err)
 	require.Equal(t, false, exists)
+}
+
+func TestChannels(t *testing.T) {
+	pool := newPool(":6379", "")
+	defer pool.Close()
+
+	queue, err := pressure.NewPressureQueue(pool, "__pressure__", "__test__")
+	require.Nil(t, err)
+
+	queue.Delete()
+
+	exists, err := queue.Exists()
+	require.Nil(t, err)
+	require.Equal(t, false, exists)
+
+	err = queue.Create(100)
+	require.Nil(t, err)
+
+	write := queue.GetWriteChan()
+	read := queue.GetReadChan()
+
+	writeDone := make(chan bool)
+	readDone := make(chan bool)
+
+	go func() {
+		write <- []byte("foo")
+		write <- []byte("bar")
+		write <- []byte("123")
+		write <- []byte("456")
+		writeDone <- true
+	}()
+
+	go func() {
+		require.Equal(t, <-read, []byte("foo"))
+		require.Equal(t, <-read, []byte("bar"))
+		require.Equal(t, <-read, []byte("123"))
+		require.Equal(t, <-read, []byte("456"))
+		readDone <- true
+	}()
+
+	<-writeDone
+	close(writeDone)
+
+	<-readDone
+	close(readDone)
 }

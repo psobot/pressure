@@ -24,17 +24,18 @@ type queueKeys struct {
 }
 
 type PressureQueue struct {
+	Pool       *redis.Pool
 	Connection redis.Conn
 
 	name      string
 	clientUid string
 	keys      queueKeys
 
-	exists    bool
+	queueExists bool
+	queueBound  int
+
 	connected bool
 	closed    bool
-
-	bound int
 }
 
 var BOUND_NOT_SET int = -1
@@ -54,14 +55,17 @@ func key(prefix string, name string, key string) string {
 	}
 }
 
-func NewPressureQueue(c redis.Conn, prefix string, name string) (*PressureQueue, error) {
+func NewPressureQueue(pool *redis.Pool, prefix string, name string) (*PressureQueue, error) {
 	hostname, err := os.Hostname()
 
 	if err != nil {
 		return nil, err
 	}
 
+	c := pool.Get()
+
 	pq := PressureQueue{
+		Pool:       pool,
 		Connection: c,
 		name:       name,
 		clientUid:  fmt.Sprintf("%s_pid%d", hostname, os.Getpid()),
@@ -79,13 +83,13 @@ func NewPressureQueue(c redis.Conn, prefix string, name string) (*PressureQueue,
 			notFull:               key(prefix, name, "not_full"),
 			closed:                key(prefix, name, "closed"),
 		},
-		exists:    false,
-		connected: false,
-		closed:    false,
-		bound:     BOUND_NOT_SET,
+		queueExists: false,
+		queueBound:  BOUND_NOT_SET,
+		connected:   false,
+		closed:      false,
 	}
 
-	pong, err := redis.String(pq.Connection.Do("PING"))
+	pong, err := redis.String(c.Do("PING"))
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +97,7 @@ func NewPressureQueue(c redis.Conn, prefix string, name string) (*PressureQueue,
 		return nil, ErrPongFailure
 	}
 
-	existing, err := redis.String(pq.Connection.Do("GET", pq.keys.bound))
+	existing, err := redis.String(c.Do("GET", pq.keys.bound))
 	if err != nil && err != redis.ErrNil {
 		return nil, err
 	}
@@ -103,11 +107,11 @@ func NewPressureQueue(c redis.Conn, prefix string, name string) (*PressureQueue,
 		if err != nil {
 			return nil, err
 		}
-		pq.bound = newBound
-		pq.exists = true
+		pq.queueBound = newBound
+		pq.queueExists = true
 	} else {
-		pq.bound = BOUND_NOT_SET
-		pq.exists = false
+		pq.queueBound = BOUND_NOT_SET
+		pq.queueExists = false
 	}
 
 	closed, err := redis.Bool(c.Do("EXISTS", pq.keys.closed))
@@ -120,21 +124,25 @@ func NewPressureQueue(c redis.Conn, prefix string, name string) (*PressureQueue,
 }
 
 func (pq *PressureQueue) Create(bound int) error {
+	return pq.create(pq.Connection, bound)
+}
+
+func (pq *PressureQueue) create(conn redis.Conn, bound int) error {
 	//  Check if the queue already exists, or create it atomically.
-	keyWasSet, err := redis.Bool(pq.Connection.Do("SETNX", pq.keys.bound, bound))
+	keyWasSet, err := redis.Bool(conn.Do("SETNX", pq.keys.bound, bound))
 
 	if err != nil {
 		return err
 	}
 
 	if keyWasSet {
-		pq.exists = true
-		pq.bound = bound
+		pq.queueExists = true
+		pq.queueBound = bound
 
 		var length int
 		var err error
 
-		length, err = redis.Int(pq.Connection.Do("LPUSH", pq.keys.producerFree, 0))
+		length, err = redis.Int(conn.Do("LPUSH", pq.keys.producerFree, 0))
 		if err != nil {
 			return err
 		}
@@ -143,7 +151,7 @@ func (pq *PressureQueue) Create(bound int) error {
 			return ErrCreationFailure
 		}
 
-		length, err = redis.Int(pq.Connection.Do("LPUSH", pq.keys.consumerFree, 0))
+		length, err = redis.Int(conn.Do("LPUSH", pq.keys.consumerFree, 0))
 		if err != nil {
 			return err
 		}
@@ -152,7 +160,7 @@ func (pq *PressureQueue) Create(bound int) error {
 			return ErrCreationFailure
 		}
 
-		length, err = redis.Int(pq.Connection.Do("LPUSH", pq.keys.notFull, 0))
+		length, err = redis.Int(conn.Do("LPUSH", pq.keys.notFull, 0))
 		if err != nil {
 			return err
 		}
@@ -167,66 +175,70 @@ func (pq *PressureQueue) Create(bound int) error {
 	}
 }
 
-func (pq *PressureQueue) Put(buf []byte) (e error) {
-	exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+func (pq *PressureQueue) Put(buf []byte) error {
+	return pq.put(pq.Connection, buf)
+}
+
+func (pq *PressureQueue) put(conn redis.Conn, buf []byte) (e error) {
+	exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 
 	if err != nil {
 		return err
 	}
 
-	pq.exists = exists
+	pq.queueExists = exists
 
-	if !pq.exists {
+	if !pq.queueExists {
 		return ErrQueueDoesNotExist
 	}
 
-	_, err = pq.Connection.Do("BRPOP", pq.keys.producerFree, 0)
+	_, err = conn.Do("BRPOP", pq.keys.producerFree, 0)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
-		_, err = pq.Connection.Do("LPUSH", pq.keys.producerFree, 0)
+		_, err = conn.Do("LPUSH", pq.keys.producerFree, 0)
 		if err != nil {
 			e = err
 		}
 	}()
 
-	_, err = pq.Connection.Do("SET", pq.keys.producer, pq.clientUid)
+	_, err = conn.Do("SET", pq.keys.producer, pq.clientUid)
 	if err != nil {
 		return err
 	}
 
-	queueClosed, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.closed))
+	queueClosed, err := redis.Bool(conn.Do("EXISTS", pq.keys.closed))
 
 	if queueClosed {
 		return ErrQueueIsClosed
 	} else {
-		if pq.bound > 0 {
-			_, err = pq.Connection.Do("BRPOP", pq.keys.notFull, 0)
+		if pq.queueBound > 0 {
+			_, err = conn.Do("BRPOP", pq.keys.notFull, 0)
 		}
 
-		queueLength, err := redis.Int(pq.Connection.Do("LPUSH", pq.keys.queue, buf))
+		queueLength, err := redis.Int(conn.Do("LPUSH", pq.keys.queue, buf))
 		if err != nil {
 			return err
 		}
 
-		if pq.bound != BOUND_NOT_SET && pq.bound != UNBOUNDED && queueLength < pq.bound {
-			_, err = pq.Connection.Do("LPUSH", pq.keys.notFull, 0)
+		if pq.queueBound != BOUND_NOT_SET && pq.queueBound != UNBOUNDED && queueLength < pq.queueBound {
+			_, err = conn.Do("LPUSH", pq.keys.notFull, 0)
 			if err != nil {
 				return err
 			}
-			_, err = pq.Connection.Do("LTRIM", pq.keys.notFull, 0, 0)
+			_, err = conn.Do("LTRIM", pq.keys.notFull, 0, 0)
 			if err != nil {
 				return err
 			}
 		}
 
-		_, err = pq.Connection.Do("INCR", pq.keys.statsProducedMessages)
+		_, err = conn.Do("INCR", pq.keys.statsProducedMessages)
 		if err != nil {
 			return err
 		}
-		_, err = pq.Connection.Do("INCRBY", pq.keys.statsProducedBytes, len(buf))
+		_, err = conn.Do("INCRBY", pq.keys.statsProducedBytes, len(buf))
 		if err != nil {
 			return err
 		}
@@ -236,36 +248,40 @@ func (pq *PressureQueue) Put(buf []byte) (e error) {
 }
 
 func (pq *PressureQueue) Get() (result []byte, e error) {
-	exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+	return pq.get(pq.Connection)
+}
+
+func (pq *PressureQueue) get(conn redis.Conn) (result []byte, e error) {
+	exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 
 	if err != nil {
 		return nil, err
 	}
 
-	pq.exists = exists
+	pq.queueExists = exists
 
-	if !pq.exists {
+	if !pq.queueExists {
 		return nil, ErrQueueDoesNotExist
 	}
 
-	_, err = pq.Connection.Do("BRPOP", pq.keys.consumerFree, 0)
+	_, err = conn.Do("BRPOP", pq.keys.consumerFree, 0)
 	if err != nil {
 		return nil, err
 	}
 
 	defer func() {
-		_, err = pq.Connection.Do("LPUSH", pq.keys.consumerFree, 0)
+		_, err = conn.Do("LPUSH", pq.keys.consumerFree, 0)
 		if err != nil {
 			e = err
 		}
 	}()
 
-	_, err = pq.Connection.Do("SET", pq.keys.consumer, pq.clientUid)
+	_, err = conn.Do("SET", pq.keys.consumer, pq.clientUid)
 	if err != nil {
 		return nil, err
 	}
 
-	isClosed, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.closed))
+	isClosed, err := redis.Bool(conn.Do("EXISTS", pq.keys.closed))
 	if err != nil {
 		return nil, err
 	}
@@ -273,12 +289,12 @@ func (pq *PressureQueue) Get() (result []byte, e error) {
 	pq.closed = isClosed
 
 	if pq.closed {
-		queueEmpty, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.queue))
+		queueEmpty, err := redis.Bool(conn.Do("EXISTS", pq.keys.queue))
 
 		if queueEmpty {
 			return nil, ErrQueueIsClosed
 		} else {
-			result, err = redis.Bytes(pq.Connection.Do("BRPOP", pq.keys.queue, 0))
+			result, err = redis.Bytes(conn.Do("BRPOP", pq.keys.queue, 0))
 			if err != nil {
 				return nil, err
 			} else {
@@ -286,7 +302,7 @@ func (pq *PressureQueue) Get() (result []byte, e error) {
 			}
 		}
 	} else {
-		popped, err := redis.Values(pq.Connection.Do("BRPOP", pq.keys.queue, pq.keys.closed, 0))
+		popped, err := redis.Values(conn.Do("BRPOP", pq.keys.queue, pq.keys.closed, 0))
 		if err != nil {
 			return nil, err
 		}
@@ -306,20 +322,20 @@ func (pq *PressureQueue) Get() (result []byte, e error) {
 				return nil, err
 			}
 
-			_, err = pq.Connection.Do("LPUSH", pq.keys.notFull, 0)
+			_, err = conn.Do("LPUSH", pq.keys.notFull, 0)
 			if err != nil {
 				return nil, err
 			}
-			_, err = pq.Connection.Do("LTRIM", pq.keys.notFull, 0, 0)
+			_, err = conn.Do("LTRIM", pq.keys.notFull, 0, 0)
 			if err != nil {
 				return nil, err
 			}
 
-			_, err = pq.Connection.Do("INCR", pq.keys.statsConsumedMessages)
+			_, err = conn.Do("INCR", pq.keys.statsConsumedMessages)
 			if err != nil {
 				return nil, err
 			}
-			_, err = pq.Connection.Do("INCRBY", pq.keys.statsConsumedBytes, len(result))
+			_, err = conn.Do("INCRBY", pq.keys.statsConsumedBytes, len(result))
 			if err != nil {
 				return nil, err
 			}
@@ -329,37 +345,41 @@ func (pq *PressureQueue) Get() (result []byte, e error) {
 	}
 }
 
-func (pq *PressureQueue) Close() (e error) {
-	exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+func (pq *PressureQueue) Close() error {
+	return pq.close(pq.Connection)
+}
+
+func (pq *PressureQueue) close(conn redis.Conn) (e error) {
+	exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 
 	if err != nil {
 		return err
 	}
 
-	pq.exists = exists
+	pq.queueExists = exists
 
-	if !pq.exists {
+	if !pq.queueExists {
 		return ErrQueueDoesNotExist
 	}
 
-	_, err = pq.Connection.Do("BRPOP", pq.keys.producerFree, 0)
+	_, err = conn.Do("BRPOP", pq.keys.producerFree, 0)
 	if err != nil {
 		return err
 	}
 
 	defer func() {
-		_, err = pq.Connection.Do("LPUSH", pq.keys.producerFree, 0)
+		_, err = conn.Do("LPUSH", pq.keys.producerFree, 0)
 		if err != nil {
 			e = err
 		}
 	}()
 
-	_, err = pq.Connection.Do("SET", pq.keys.producer, pq.clientUid)
+	_, err = conn.Do("SET", pq.keys.producer, pq.clientUid)
 	if err != nil {
 		return err
 	}
 
-	isClosed, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.closed))
+	isClosed, err := redis.Bool(conn.Do("EXISTS", pq.keys.closed))
 	if err != nil {
 		return err
 	}
@@ -368,7 +388,7 @@ func (pq *PressureQueue) Close() (e error) {
 	if pq.closed {
 		return ErrQueueIsClosed
 	} else {
-		_, err = pq.Connection.Do("LPUSH", pq.keys.closed, 0, 0)
+		_, err = conn.Do("LPUSH", pq.keys.closed, 0, 0)
 		if err != nil {
 			return err
 		}
@@ -377,55 +397,59 @@ func (pq *PressureQueue) Close() (e error) {
 	return nil
 }
 
-func (pq *PressureQueue) Delete() (e error) {
-	exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+func (pq *PressureQueue) Delete() error {
+	return pq.delete(pq.Connection)
+}
+
+func (pq *PressureQueue) delete(conn redis.Conn) (e error) {
+	exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 
 	if err != nil {
 		return err
 	}
 
-	pq.exists = exists
+	pq.queueExists = exists
 
-	if !pq.exists {
+	if !pq.queueExists {
 		return ErrQueueDoesNotExist
 	}
 
-	_, err = pq.Connection.Do("DEL", pq.keys.bound)
+	_, err = conn.Do("DEL", pq.keys.bound)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("LPUSH", pq.keys.notFull, 0)
+	_, err = conn.Do("LPUSH", pq.keys.notFull, 0)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("LPUSH", pq.keys.closed, 0, 0)
+	_, err = conn.Do("LPUSH", pq.keys.closed, 0, 0)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("BRPOP", pq.keys.producerFree, 0)
+	_, err = conn.Do("BRPOP", pq.keys.producerFree, 0)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("DEL", pq.keys.producer, pq.keys.producerFree)
+	_, err = conn.Do("DEL", pq.keys.producer, pq.keys.producerFree)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("BRPOP", pq.keys.consumerFree, 0)
+	_, err = conn.Do("BRPOP", pq.keys.consumerFree, 0)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("DEL", pq.keys.consumer, pq.keys.consumerFree)
+	_, err = conn.Do("DEL", pq.keys.consumer, pq.keys.consumerFree)
 	if err != nil {
 		return err
 	}
 
-	_, err = pq.Connection.Do("DEL",
+	_, err = conn.Do("DEL",
 		pq.keys.notFull,
 		pq.keys.closed,
 		pq.keys.statsProducedMessages,
@@ -438,34 +462,42 @@ func (pq *PressureQueue) Delete() (e error) {
 		return err
 	}
 
-	pq.exists = false
+	pq.queueExists = false
 
 	return nil
 }
 
 func (pq *PressureQueue) Exists() (bool, error) {
-	exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+	return pq.exists(pq.Connection)
+}
+
+func (pq *PressureQueue) exists(conn redis.Conn) (bool, error) {
+	exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 
 	if err != nil {
 		return false, err
 	}
 
-	pq.exists = exists
-	return pq.exists, nil
+	pq.queueExists = exists
+	return pq.queueExists, nil
 }
 
 func (pq *PressureQueue) Length() (int, error) {
-	length, err := redis.Int(pq.Connection.Do("LLEN", pq.keys.queue))
+	return pq.length(pq.Connection)
+}
+
+func (pq *PressureQueue) length(conn redis.Conn) (int, error) {
+	length, err := redis.Int(conn.Do("LLEN", pq.keys.queue))
 
 	if err == redis.ErrNil {
-		exists, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.bound))
+		exists, err := redis.Bool(conn.Do("EXISTS", pq.keys.bound))
 		if err != nil {
 			return 0, err
 		}
 
-		pq.exists = exists
+		pq.queueExists = exists
 
-		if pq.exists {
+		if pq.queueExists {
 			return 0, nil
 		} else {
 			return 0, ErrQueueDoesNotExist
@@ -478,12 +510,16 @@ func (pq *PressureQueue) Length() (int, error) {
 }
 
 func (pq *PressureQueue) IsClosed() (bool, error) {
+	return pq.isClosed(pq.Connection)
+}
+
+func (pq *PressureQueue) isClosed(conn redis.Conn) (bool, error) {
 	exists, err := pq.Exists()
 	if err != nil {
 		return true, err
 	}
 	if exists {
-		isClosed, err := redis.Bool(pq.Connection.Do("EXISTS", pq.keys.closed))
+		isClosed, err := redis.Bool(conn.Do("EXISTS", pq.keys.closed))
 
 		if err != nil {
 			return true, err
@@ -494,4 +530,55 @@ func (pq *PressureQueue) IsClosed() (bool, error) {
 	} else {
 		return true, ErrQueueDoesNotExist
 	}
+}
+
+func (pq *PressureQueue) getIntoChan(c chan []byte) {
+	threadLocalConnection := pq.Pool.Get()
+	defer threadLocalConnection.Close()
+
+	for {
+		data, err := pq.get(threadLocalConnection)
+		if err == nil {
+			c <- data
+		} else if err == ErrQueueIsClosed {
+			close(c)
+			break
+		} else {
+			close(c)
+			panic(err)
+		}
+	}
+}
+
+func (pq *PressureQueue) GetReadChan() <-chan []byte {
+	return pq.GetBufferedReadChan(0)
+}
+
+func (pq *PressureQueue) GetBufferedReadChan(bufSize int) <-chan []byte {
+	c := make(chan []byte, bufSize)
+	go pq.getIntoChan(c)
+	return c
+}
+
+func (pq *PressureQueue) putFromChan(c chan []byte) {
+	threadLocalConnection := pq.Pool.Get()
+	defer threadLocalConnection.Close()
+
+	for elem := range c {
+		err := pq.put(threadLocalConnection, elem)
+		if err != nil {
+			close(c)
+			panic(err)
+		}
+	}
+}
+
+func (pq *PressureQueue) GetWriteChan() chan<- []byte {
+	return pq.GetBufferedWriteChan(0)
+}
+
+func (pq *PressureQueue) GetBufferedWriteChan(bufSize int) chan<- []byte {
+	c := make(chan []byte, bufSize)
+	go pq.putFromChan(c)
+	return c
 }
