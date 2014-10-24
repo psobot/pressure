@@ -123,3 +123,48 @@ func TestChannels(t *testing.T) {
 	<-readDone
 	close(readDone)
 }
+
+func TestBufferedChannels(t *testing.T) {
+	pool := newPool(":6379", "")
+	defer pool.Close()
+
+	queue, err := pressure.NewPressureQueue(pool, "__pressure__", "__test__")
+	require.Nil(t, err)
+
+	queue.Delete()
+
+	exists, err := queue.Exists()
+	require.Nil(t, err)
+	require.Equal(t, false, exists)
+
+	err = queue.Create(100)
+	require.Nil(t, err)
+
+	write := queue.GetBufferedWriteChan(5)
+	read := queue.GetBufferedReadChan(5)
+
+	writeDone := make(chan bool)
+	readDone := make(chan bool)
+
+	go func() {
+		write <- []byte("foo")
+		write <- []byte("bar")
+		write <- []byte("123")
+		write <- []byte("456")
+		writeDone <- true
+	}()
+
+	go func() {
+		require.Equal(t, <-read, []byte("foo"))
+		require.Equal(t, <-read, []byte("bar"))
+		require.Equal(t, <-read, []byte("123"))
+		require.Equal(t, <-read, []byte("456"))
+		readDone <- true
+	}()
+
+	<-writeDone
+	close(writeDone)
+
+	<-readDone
+	close(readDone)
+}
