@@ -1,3 +1,6 @@
 [submodule "python"]
 	path = python
 	url = git://github.com/psobot/pressure-python
+[submodule "go"]
+	path = go
+	url = https://github.com/psobot/pressure-go.git
